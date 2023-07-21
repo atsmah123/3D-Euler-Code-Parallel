@@ -1,0 +1,171 @@
+module outer_flux_dGypos_mod
+
+!	First written on 01.01.2021.
+!	
+
+        use data_structure_mod
+        use octant_fluxes_mod    
+        use q_variables_mod
+        use q_derivatives_mod
+        use qvariables_to_primitive_variables_mod
+        use limiters_mod
+
+
+contains
+
+
+!	This subroutine evaluates the outer flux derivative dGy_pos
+
+
+        attributes(device) subroutine outer_dGy_pos(i ,G, x1, y1, z1, tan1_device, tan2_device, nor_device, q2, dq2, ypos_conn1, ypos_nbhs1, qm1, min_dist1,power1,VL_CONST, limiter_flag1, qtilde, phi)
+!
+!
+		implicit none
+
+		integer :: i, j, k, r
+		real*8 :: prim(5)
+		real*8 :: x_i, y_i, z_i, x_k, y_k, z_k
+		real*8 :: tan1(3), tan2(3), nor(3)
+		real*8 :: G_i(5), G_k(5), G(5)
+		real*8 :: delx, dely, delz, det, one_by_det
+		real*8 :: dels, delt, deln
+!		
+		real*8 :: sum_delx_sqr, sum_dely_sqr, sum_delz_sqr
+		real*8 :: sum_delx_dely, sum_dely_delz, sum_delz_delx
+		real*8 :: sum_delx_delf(5), sum_dely_delf(5), sum_delz_delf(5)
+		real*8 :: dist, weights
+		real*8 :: temp(5),qtilde(5), phi_i(5), phi_k(5), phi(5)
+		real*8 :: dels_weights, delt_weights, deln_weights
+
+		real*8, dimension(:), device :: x1, y1, z1, min_dist1
+		real*8, dimension(:,:), device :: q2, tan1_device, tan2_device, nor_device
+		real*8, dimension(:,:,:), device :: dq2, qm1
+		integer, dimension(:,:), device :: ypos_conn1
+		integer, dimension(:), device:: ypos_nbhs1
+		real*8, value :: power1,VL_CONST
+		integer, value :: limiter_flag1
+!
+!
+		sum_delx_sqr = 0.0d0
+		sum_dely_sqr = 0.0d0
+		sum_delz_sqr = 0.0d0
+!
+		sum_delx_dely = 0.0d0
+		sum_dely_delz = 0.0d0
+		sum_delz_delx = 0.0d0
+!
+		sum_delx_delf = 0.0d0
+		sum_dely_delf = 0.0d0
+		sum_delz_delf = 0.0d0
+!
+		x_i = x1(i)
+		y_i = y1(i)
+		z_i = z1(i)
+!
+		tan1 = tan1_device(:,i)
+		tan2 = tan2_device(:,i)
+		nor = nor_device(:,i)
+!
+!
+!		Finding the limiter function ..
+!
+		do r = 1, 5
+			phi_i(r) = 1.0d0
+		enddo
+!
+!
+		if(limiter_flag1 .eq. 1) then
+!               
+			do j = 1, ypos_nbhs1(i)
+!
+				k = ypos_conn1(j,i)
+!
+				x_k = x1(k)
+				y_k = y1(k)
+				z_k = z1(k)
+!
+				delx = x_k - x_i
+				dely = y_k - y_i
+				delz = z_k - z_i
+!
+				qtilde = q2(:,k) - 0.5d0*(delx*dq2(1,:,k) + dely*dq2(2,:,k) + delz*dq2(3,:,k))
+				call venkat_limiter(qtilde, phi_k, i, q2, qm1, min_dist1)
+!               
+				do r = 1, 5
+					if(phi_k(r) .lt. phi_i(r)) then
+						phi_i(r) = phi_k(r)
+					endif
+				enddo
+			enddo
+		endif
+!                                                                       
+!	Limiter function evaluation is completed ..
+!
+!
+!
+		do j = 1, ypos_nbhs1(i)
+!
+			k = ypos_conn1(j,i)
+!
+			x_k = x1(k)
+			y_k = y1(k)
+			z_k = z1(k)
+!
+			delx = x_k - x_i
+			dely = y_k - y_i
+			delz = z_k - z_i
+!
+			dels = delx*tan1(1) + dely*tan1(2) + delz*tan1(3)
+			delt = delx*tan2(1) + dely*tan2(2) + delz*tan2(3)
+			deln = delx*nor(1) + dely*nor(2) + delz*nor(3)
+!
+			dist = dsqrt(dels*dels + delt*delt + deln*deln)
+			weights = 1.0d0/(dist**power1)
+!
+			dels_weights = dels*weights
+			delt_weights = delt*weights
+			deln_weights = deln*weights
+!
+			sum_delx_sqr = sum_delx_sqr + dels*dels_weights
+			sum_dely_sqr = sum_dely_sqr + delt*delt_weights
+			sum_delz_sqr = sum_delz_sqr + deln*deln_weights
+!
+			sum_delx_dely = sum_delx_dely + dels*delt_weights
+			sum_dely_delz = sum_dely_delz + delt*deln_weights
+			sum_delz_delx = sum_delz_delx + deln*dels_weights
+!
+			temp = delx*dq2(1,:,i) + dely*dq2(2,:,i) + delz*dq2(3,:,i)  
+			qtilde = q2(:,i) - 0.5d0*phi_i*temp
+			call qtilde_to_primitive(qtilde, prim)
+			call flux_Goyp(G_i, tan1, tan2, nor, prim)
+!
+            temp = delx*dq2(1,:,k) + dely*dq2(2,:,k) + delz*dq2(3,:,k)  
+			qtilde = q2(:,k) - 0.5d0*phi_i*temp
+			call qtilde_to_primitive(qtilde, prim)
+			call flux_Goyp(G_k, tan1, tan2, nor, prim)
+!       
+			temp = G_k - G_i
+!
+			sum_delx_delf = sum_delx_delf + temp*dels_weights
+			sum_dely_delf = sum_dely_delf + temp*delt_weights
+			sum_delz_delf = sum_delz_delf + temp*deln_weights
+!
+        enddo
+!
+		det = sum_delx_sqr*(sum_dely_sqr*sum_delz_sqr - sum_dely_delz*sum_dely_delz) &
+			- sum_delx_dely*(sum_delx_dely*sum_delz_sqr - sum_dely_delz*sum_delz_delx) &
+			+ sum_delz_delx*(sum_delx_dely*sum_dely_delz - sum_dely_sqr*sum_delz_delx)
+!                        
+		one_by_det = 1.d0/det
+!
+		temp = sum_delx_sqr*(sum_dely_delf*sum_delz_sqr - sum_dely_delz*sum_delz_delf) &
+				- sum_delx_dely*(sum_delx_delf*sum_delz_sqr - sum_delz_delx*sum_delz_delf) &
+				+ sum_delz_delx*(sum_delx_delf*sum_dely_delz - sum_delz_delx*sum_dely_delf)
+!
+!
+		G = temp*one_by_det
+!
+        end subroutine
+!
+!
+end module outer_flux_dGypos_mod
